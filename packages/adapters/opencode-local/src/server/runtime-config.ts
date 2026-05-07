@@ -9,12 +9,37 @@ type PreparedOpenCodeRuntimeConfig = {
   cleanup: () => Promise<void>;
 };
 
+function nonEmpty(value: string | undefined): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function resolveOpenCodeLocalHomeDir(env: Record<string, string>): string {
+  const envHome = nonEmpty(env.HOME);
+  if (envHome && path.isAbsolute(envHome) && !envHome.startsWith("/paperclip")) {
+    return path.resolve(envHome);
+  }
+  try {
+    const userHome = nonEmpty(os.userInfo().homedir);
+    if (userHome) return path.resolve(userHome);
+  } catch {
+    // Fall back to os.homedir() when the current UID cannot be resolved.
+  }
+  return path.resolve(os.homedir());
+}
+
+export function normalizeOpenCodeLocalEnv(env: Record<string, string>): Record<string, string> {
+  const home = resolveOpenCodeLocalHomeDir(env);
+  return {
+    ...env,
+    HOME: home,
+    XDG_CONFIG_HOME: nonEmpty(env.XDG_CONFIG_HOME) ?? path.join(home, ".config"),
+    XDG_DATA_HOME: nonEmpty(env.XDG_DATA_HOME) ?? path.join(home, ".local", "share"),
+    XDG_STATE_HOME: nonEmpty(env.XDG_STATE_HOME) ?? path.join(home, ".local", "state"),
+  };
+}
+
 function resolveXdgConfigHome(env: Record<string, string>): string {
-  return (
-    (typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()) ||
-    (typeof process.env.XDG_CONFIG_HOME === "string" && process.env.XDG_CONFIG_HOME.trim()) ||
-    path.join(os.homedir(), ".config")
-  );
+  return normalizeOpenCodeLocalEnv(env).XDG_CONFIG_HOME;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -36,15 +61,15 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
+  const normalizedEnv = normalizeOpenCodeLocalEnv(input.env);
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
     return {
-      env: input.env,
+      env: normalizedEnv,
       notes: [],
       cleanup: async () => {},
     };
   }
-
   // For remote execution targets the host XDG_CONFIG_HOME path is meaningless
   // (and actively harmful — it leaks a macOS-only path into the remote Linux
   // env). Callers that need to ship a runtime opencode config to the remote
@@ -52,13 +77,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // host-fs helper is local-only.
   if (input.targetIsRemote) {
     return {
-      env: input.env,
+      env: normalizedEnv,
       notes: [],
       cleanup: async () => {},
     };
   }
-
-  const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
+  const sourceConfigDir = path.join(resolveXdgConfigHome(normalizedEnv), "opencode");
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
   const runtimeConfigDir = path.join(runtimeConfigHome, "opencode");
   const runtimeConfigPath = path.join(runtimeConfigDir, "opencode.json");
@@ -92,7 +116,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
 
   return {
     env: {
-      ...input.env,
+      ...normalizedEnv,
       XDG_CONFIG_HOME: runtimeConfigHome,
     },
     notes: [

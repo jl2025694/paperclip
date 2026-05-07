@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import {
+  normalizeOpenCodeLocalEnv,
+  prepareOpenCodeRuntimeConfig,
+  resolveOpenCodeLocalHomeDir,
+} from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -31,6 +35,18 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
 }
 
 describe("prepareOpenCodeRuntimeConfig", () => {
+  it("replaces a managed /paperclip home with the real local user home", () => {
+    const resolvedHome = resolveOpenCodeLocalHomeDir({ HOME: "/paperclip" });
+
+    expect(resolvedHome).toBe(os.homedir());
+    expect(normalizeOpenCodeLocalEnv({ HOME: "/paperclip" })).toMatchObject({
+      HOME: os.homedir(),
+      XDG_CONFIG_HOME: path.join(os.homedir(), ".config"),
+      XDG_DATA_HOME: path.join(os.homedir(), ".local", "share"),
+      XDG_STATE_HOME: path.join(os.homedir(), ".local", "state"),
+    });
+  });
+
   it("injects an external_directory allow rule by default", async () => {
     const configHome = await makeConfigHome({
       permission: {
@@ -72,7 +88,12 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       config: { dangerouslySkipPermissions: false },
     });
 
-    expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
+    expect(prepared.env).toEqual({
+      HOME: os.homedir(),
+      XDG_CONFIG_HOME: configHome,
+      XDG_DATA_HOME: path.join(os.homedir(), ".local", "share"),
+      XDG_STATE_HOME: path.join(os.homedir(), ".local", "state"),
+    });
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
